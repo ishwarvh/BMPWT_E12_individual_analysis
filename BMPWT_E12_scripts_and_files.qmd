@@ -1,0 +1,1386 @@
+---
+author: "Ishwar V. Hosamani"
+title: "Analysis of the BMPWT_E11 10X scRNAseq dataset"
+date: today
+theme: Pulse
+editor: visual
+format: 
+  html:
+    
+    code-fold: true
+    page-layout: full
+knitr:
+  opts_chunk: 
+    collapse: true
+    comment: "#>" 
+    R.options:
+      
+      knitr.graphics.auto_pdf: true    
+execute: 
+  error: true
+  cache: true
+editor_options: 
+  chunk_output_type: console
+---
+
+### Load Packages
+
+```{r "Load packages"}
+#| verbose: false
+
+#Load libraries
+suppressPackageStartupMessages({
+library(Seurat)
+library(SingleCellExperiment)
+library(scater)
+library(sctransform)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(clustree)
+library(future)
+library(scCustomize) #failing due to Cairo on R4.3
+library(cowplot)
+library(stringr)
+library(ape)
+library(scDblFinder) #failing due to Cairo on R4.3
+library(DoubletFinder)
+library(scran)
+library(SoupX)
+library(ggtree)
+library(tidyr)
+library(tibble)
+library(ComplexHeatmap)
+library(parallel)
+library(future)
+# renv::install("Bioc::glmGamPoi")
+library(glmGamPoi)
+library(plotly)
+library(presto)
+})
+
+
+
+options(future.globals.maxSize = 2000 * 1024^2)
+# plan("multisession", workers = 4)
+plan("sequential")
+plan()
+
+# Had some trouble installing a few packages in renv. Was ablw to install using a combinatino of install.packages() and renv::install() and specifying type ="binary" in the installation functions and options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# renv::install("git::https://github.com/immunogenomics/presto")
+
+```
+
+```{r "Custom colors"}
+custom_colors <- list()
+
+colors_dutch <- c(
+  '#FFC312','#C4E538','#12CBC4','#FDA7DF','#ED4C67',
+  '#F79F1F','#A3CB38','#1289A7','#D980FA','#B53471',
+  '#EE5A24','#009432','#0652DD','#9980FA','#833471',
+  '#EA2027','#006266','#1B1464','#5758BB','#6F1E51'
+)
+
+colors_spanish <- c(
+  '#40407a','#706fd3','#f7f1e3','#34ace0','#33d9b2',
+  '#2c2c54','#474787','#aaa69d','#227093','#218c74',
+  '#ff5252','#ff793f','#d1ccc0','#ffb142','#ffda79',
+  '#b33939','#cd6133','#84817a','#cc8e35','#ccae62'
+)
+
+custom_colors$discrete <- c(colors_dutch, colors_spanish)
+
+custom_colors$cell_cycle <- setNames(
+  c('#45aaf2', '#f1c40f', '#e74c3c', '#7f8c8d'),
+  c('G1',      'S',       'G2M',     '-')
+)
+```
+
+### Remove ambient RNA with SoupX
+
+Cellranger predicted 16730 cells for this sample.
+
+```{r}
+#!label: Remove ambient RNA with SoupX
+sc = load10X('../../gex_matrices/BMPWT_E11_cellranger_output/')
+sc = autoEstCont(sc, doPlot = T, verbose = T, tfidfMin = 0.9)
+out = adjustCounts(sc, roundToInt = TRUE)
+dim(out)
+# [1] 21686 17103
+
+nosoup <- Read10X("../../gex_matrices/BMPWT_E11_cellranger_output/filtered_feature_bc_matrix/")
+dim(nosoup)
+# [1] 21686  17103
+
+#How many UMI;s were removed?
+((sum(nosoup)-sum(out))/sum(nosoup))*100
+# [1] 1.6
+
+```
+
+### Create Seurat Object
+
+```{r "Load the dataset and create seurat object"}
+# Load the  dataset
+# BMPWT_E11.data <- Read10X(data.dir = "../../gex_matrices/BMPWT_E11_filter_feat_bc_mtx/")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+BMPWT_E11_seu_obj <- CreateSeuratObject(counts = out, project = "BMPWT_E11", min.cells = 10, min.features = 200) #Keep only genes expressed in atleast 10 cells and cells expressing atleast 200 genes
+
+BMPWT_E11_seu_obj
+# 16329 features across 17096 samples
+```
+
+### Add mitochondrial and ribosomal gene percentages to the meta.data
+
+```{r}
+#|label: Create a metadata column with the percent mitochondrial genes expressed
+
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+# BMPWT_E11_seu_obj[["percent.mt"]] <- PercentageFeatureSet(BMPWT_E11_seu_obj, pattern = "^mt-")
+BMPWT_E11_seu_obj <- Add_Mito_Ribo_Seurat(seurat_object = BMPWT_E11_seu_obj, species = "Mouse")
+```
+
+### Stats on nUMI's, nGenes and percent.mt (pre-filteration)
+
+```{r}
+#|label: Print the central tendencies of the nUMIs, nGenes and percent mito expression
+print(summary(BMPWT_E11_seu_obj$nCount_RNA))
+print(summary(BMPWT_E11_seu_obj$nFeature_RNA))
+print(summary(BMPWT_E11_seu_obj$percent_mito))
+```
+
+### Histograms of nUMI's, nGenes and percent.mt (pre-filteration)
+
+```{r "Histograms of the nUMIs, nGenes, pct.mt"}
+#| label: QC histograms
+#| fig-cap: "QC histograms"
+#| fig-subcap: 
+#|   - "nUMIs"
+#|   - "nGenes"
+#|   - "Percent Mito Genes Expressed"
+
+hist(BMPWT_E11_seu_obj$nCount_RNA)
+hist(BMPWT_E11_seu_obj$nFeature_RNA)
+hist(BMPWT_E11_seu_obj$percent_mito)
+```
+
+```{r}
+#|label: save the above histograms
+tiff("../plots/BMPWT_E11_histogram_nCountRNA.tiff", width = 20, height = 15, units = "cm", res = 300)
+hist(BMPWT_E11_seu_obj$nCount_RNA)
+dev.off()
+
+tiff("../plots/BMPWT_E11_histogram_nFeatureRNA.tiff", width = 20, height = 15, units = "cm", res = 300)
+hist(BMPWT_E11_seu_obj$nFeature_RNA)
+dev.off()
+
+tiff("../plots/BMPWT_E11_histogram_percent_mito.tiff", width = 20, height = 15, units = "cm", res = 300)
+hist(BMPWT_E11_seu_obj$percent_mito)
+dev.off()
+```
+
+### Add Cell Complexity/Novelty QC metric
+
+```{r}
+#| label: Add Cell Complexity/Novelty QC metric
+# These defaults can be run just by providing accepted species name
+BMPWT_E11_seu_obj <- Add_Cell_Complexity_Seurat(seurat_object = BMPWT_E11_seu_obj)
+```
+
+### QC plots (scCustomize based)
+
+```{r}
+#|label: pre-filter QC plots
+# scCustomize wrapper funciton for VlnPlot based QC plots
+p1 <-
+  QC_Plots_Genes(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff = 500,
+    high_cutoff = 8500,
+    plot_title = "Genes Per Cell",
+    plot_median = T,
+    median_size = 25,
+    y_axis_log = T
+  )
+
+p2 <-
+  QC_Plots_UMIs(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff = 500,
+    high_cutoff = 60000,
+    plot_title = "nUMI's Per Cell",
+    plot_median = T,
+    median_size = 25,
+    y_axis_log = T
+  )
+
+p3 <-
+  QC_Plots_Mito(
+    seurat_object = BMPWT_E11_seu_obj,
+    high_cutoff = 20,
+    plot_title = "Mito% Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+
+p4 <-
+  QC_Plots_Complexity(
+    seurat_object = BMPWT_E11_seu_obj,
+    high_cutoff = 0.8,
+    plot_title = "Cell Complexity
+(log10Genes/UMI)
+    Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+# Or use QC_Plots_Combined_Vln(BMPWT_E11_seu_obj) to produce all 3 plots at once
+```
+
+```{r}
+#| label: separate block to save and print the above violin QC plots
+
+# (p1 | p2)/(p3 | p4)
+p1|p2|p3|p4
+
+ggsave("../plots/scCustomize_pre_filter_QC_BMPWT_E11_vlnplots.tiff", device = "tiff",width = 12, height = 10)
+```
+
+### FeatureScatter based QC plots
+
+```{r}
+#|label: pre filtration feature_scatter based QC plots
+
+p11 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    low_cutoff_UMI = 500,
+    high_cutoff_UMI =  60000,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+p12 <-
+  QC_Plot_GenevsFeature(
+    seurat_object = BMPWT_E11_seu_obj,
+    feature1 = "percent_mito",
+    low_cutoff_gene = 500 ,
+    high_cutoff_gene = 8500,
+    high_cutoff_feature = 20,
+    x_axis_label = "Percent Mito Genes per cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+p13 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    meta_gradient_name = "percent_mito",
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    high_cutoff_UMI = 60000,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+# view only points above potential cutoff meta_gradient_low_cutoff can be specified
+p14 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    meta_gradient_name = "percent_mito",
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    high_cutoff_UMI = 60000,
+    meta_gradient_low_cutoff = 20,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+```
+
+```{r}
+#|label: print and save the above feature scatter based QC plots
+(p11 | p12)/(p13 | p14)
+
+ggsave("../plots/prefilter_featurescatter_QC_BMPWT_E11_plots.tiff", device = "tiff", height = 12, width = 16)
+```
+
+### Analyze Median QC values per library
+
+```{r}
+#|label: Calculate median values and return a dataframe
+
+median_stats <- Median_Stats(seurat_object = BMPWT_E11_seu_obj, group_by_var = "orig.ident")
+write.csv(x = median_stats, file = "../tables/prefiltration_BMPWT_E11_median_stats.csv")
+
+#plot median values
+p21 <-
+  Plot_Median_Genes(
+    seurat_object = BMPWT_E11_seu_obj,
+    x_axis_label = "BMPWT_E11",
+    x_lab_rotate = F
+  )
+p22 <-
+  Plot_Median_UMIs(
+    seurat_object = BMPWT_E11_seu_obj,
+    x_axis_label = "BMPWT_E11",
+    x_lab_rotate = F
+  )
+p23 <-
+  Plot_Median_Mito(
+    seurat_object = BMPWT_E11_seu_obj,
+    x_axis_label = "BMPWT_E11",
+    x_lab_rotate = F
+  )
+p24 <-
+  Plot_Median_Other(
+    seurat_object = BMPWT_E11_seu_obj,
+    median_var = "percent_ribo",
+    x_axis_label = "BMPWT_E11",
+    x_lab_rotate = F
+  )
+
+```
+
+```{r}
+#|label: print and save the above median value plots
+
+(p21 | p22)/(p23 |p24)
+
+ggsave("../plots/prefiltration_BMPWT_E11_median_values.tiff", device = "tiff", height = 8, width = 10)
+
+```
+
+### Perform Gene and Mito% level based filtering
+
+```{r "Gene level filtering"}
+BMPWT_E11_seu_obj <- subset(BMPWT_E11_seu_obj, subset = nFeature_RNA > 500 & nFeature_RNA < 8500 & percent_mito < 20) #add a nCount_RNA criteria if needed
+
+BMPWT_E11_seu_obj
+# 15825 features across 16998 samples
+
+saveRDS(BMPWT_E11_seu_obj, "filtered_BMPWT_E11_seu_obj.RDS")
+```
+
+### Post-filtration QC metrics
+
+```{r}
+#|label: post-filter QC plots
+# scCustomize wrapper funciton for VlnPlot based QC plots
+p31 <-
+  QC_Plots_Genes(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff = 500,
+    high_cutoff = 8500,
+    plot_title = "Genes Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+
+p32 <-
+  QC_Plots_UMIs(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff = 500,
+    high_cutoff = 60000,
+    plot_title = "nUMI's Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+
+p33 <-
+  QC_Plots_Mito(
+    seurat_object = BMPWT_E11_seu_obj,
+    high_cutoff = 20,
+    plot_title = "Mito% Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+
+p34 <-
+  QC_Plots_Complexity(
+    seurat_object = BMPWT_E11_seu_obj,
+    high_cutoff = 0.8,
+    plot_title = "Cell Complexity
+(log10Genes/UMI)
+    Per Cell",
+    plot_median = T,
+    median_size = 25
+  )
+
+p35 <-
+  QC_Plot_UMIvsGene(
+    BMPWT_E11_seu_obj,
+    meta_gradient_name = "percent_mito",
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    high_cutoff_UMI = 60000,
+    meta_gradient_low_cutoff = 20,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+```
+
+```{r}
+#| label: print and save the above post-filtration plots
+
+p31|p32|p33|p34
+ggsave("../plots/post_filtration_BMPWT_E11_vlnplots.tiff", width = 12, height = 10, device = "tiff")
+```
+
+```{r}
+#| label: post filtration feature_scatter plots
+
+p41 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    low_cutoff_UMI = 500,
+    high_cutoff_UMI =  60000,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+p42 <-
+  QC_Plot_GenevsFeature(
+    seurat_object = BMPWT_E11_seu_obj,
+    feature1 = "percent_mito",
+    low_cutoff_gene = 500 ,
+    high_cutoff_gene = 8500,
+    high_cutoff_feature = 20,
+    x_axis_label = "Percent Mito Genes per cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+p43 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    meta_gradient_name = "percent_mito",
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    high_cutoff_UMI = 60000,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+
+# view only points above potential cutoff meta_gradient_low_cutoff can be specified
+p44 <-
+  QC_Plot_UMIvsGene(
+    seurat_object = BMPWT_E11_seu_obj,
+    meta_gradient_name = "percent_mito",
+    low_cutoff_gene = 500,
+    high_cutoff_gene = 8500,
+    high_cutoff_UMI = 60000,
+    meta_gradient_low_cutoff = 20,
+    x_axis_label = "nUMIs per Cell",
+    y_axis_label = "Genes per Cell"
+  )
+```
+
+```{r}
+#| label: Print and save the above post filtration scatter plots
+
+(p41|p42)/(p43|p44)
+ggsave("../plots/postfiltration_BMPWT_E11_feature_scatter_plots.tiff", height = 12, width = 16, device = "tiff")
+```
+
+### Cell Cycle scoring
+
+```{r "Perform cell cycle scoring and distribution in the raw data"}
+#| label: Perform cell cycle scoring and distribution in the raw data
+
+# Cell Cycle genes
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+s.genes <- str_to_title(s.genes)
+g2m.genes <- str_to_title(g2m.genes)
+
+
+# Perform regular normalization and scaling to find cell cycle effects in the data
+
+BMPWT_E11_seu_obj <- NormalizeData(BMPWT_E11_seu_obj)
+
+BMPWT_E11_seu_obj <-
+  CellCycleScoring(
+    BMPWT_E11_seu_obj,
+    s.features = s.genes,
+    g2m.features = g2m.genes,
+    set.ident = TRUE
+  )
+
+BMPWT_E11_seu_obj <-
+  FindVariableFeatures(BMPWT_E11_seu_obj,
+                       selection.method = "vst",
+                       nfeatures = 2000)
+
+BMPWT_E11_seu_obj <- ScaleData(BMPWT_E11_seu_obj, features = rownames(BMPWT_E11_seu_obj))
+
+# Perform PCA
+BMPWT_E11_seu_obj <- RunPCA(BMPWT_E11_seu_obj)
+
+# BMPWT_E11_seu_obj <- CellCycleScoring(BMPWT_E11_seu_obj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+# view cell cycle scores and phase assignments
+# head(BMPWT_E11_seu_obj[[]])
+
+# # Visualize the distribution of cell cycle markers in raw data
+# RidgePlot(BMPWT_E11_seu_obj, features = c("Pcna", "Top2a", "Mcm6", "Mki67"), ncol = 2)
+# ggsave("../plots/ridge_CellCycleGeneExpr_rawdata.tiff")
+
+
+```
+
+```{r}
+#| label: cellcycle scoring plots
+# Plot the PCA colored by cell cycle phase
+cc_pca_p1 <- DimPlot_scCustom(
+  BMPWT_E11_seu_obj,
+  reduction = "pca",
+  group.by = "Phase",
+  pt.size = 1
+)
+
+cc_pca_p2 <- DimPlot_scCustom(
+  BMPWT_E11_seu_obj,
+  reduction = "pca",
+  split.by = "Phase",
+  pt.size = 1
+)
+
+cc_pca_p1
+cc_pca_p2
+
+# DimPlot_scCustom(BMPWT_E11_seu_obj, label = F) + ggtitle("BMPWT_E11_cell_cycle_effects")
+ggsave("../plots/CellCyleScores_BMPWT_E11_PCA_grouped.tiff", plot = cc_pca_p1, width = 6, height = 5)
+
+ggsave("../plots/CellCyleScores_BMPWT_E11_PCA_split.tiff", plot = cc_pca_p2, width = 15, height = 5)
+```
+
+```{r}
+#| label: Ridge and violin plots for cell cycle gene expression
+
+# Visualize the distribution of cell cycle markers across
+cc_ridgeplot <-
+  RidgePlot(
+    BMPWT_E11_seu_obj,
+    features = c("Pcna", "Top2a", "Mcm6", "Mki67"),
+    ncol = 2
+  )
+
+cc_ridgeplot
+
+ggsave("../plots/ridgeplot_nUMI_nGene_pct.mt_by_CC_Phase.tiff",plot = cc_ridgeplot, width = 11, height = 7)
+
+cc_vlnplot <-
+  VlnPlot_scCustom(
+    BMPWT_E11_seu_obj,
+    features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+    group.by = "Phase",
+    pt.size = 0.1
+  )
+
+cc_vlnplot
+
+ggsave("../plots/vlnplot_BMPWT_E11_nUMI_nGene_pct.mt_by_CC_Phase.tiff", width = 12, height = 7)
+```
+
+### Perform SCTransform
+
+```{r "Run SCtransform and regress cell cycle scores if necessary)"}
+
+options(future.globals.maxSize = 1000 * 1024^2)
+# plan("multisession", workers = 4)
+# plan()
+
+## downsample to test something
+# object.downsample <- subset(BMPWT_E11_seu_obj, cells = sample(Cells(BMPWT_E11_seu_obj), 1000))
+# object.downsample <- NormalizeData(object.downsample)
+
+
+# normalize data with SCTransform()
+suppressWarnings(
+  BMPWT_E11_seu_obj <- SCTransform(
+    BMPWT_E11_seu_obj,
+    vst.flavor = "v2",
+    return.only.var.genes = T,
+    conserve.memory = T
+  )
+)
+
+saveRDS(BMPWT_E11_seu_obj, file = "BMPWT_E11_seu_obj.RDS")
+```
+
+```{r}
+#| label: plot variable features
+
+hvg_plot <- VariableFeaturePlot_scCustom(BMPWT_E11_seu_obj, num_features = 20, repel = T)
+hvg_plot
+ggsave(plot = hvg_plot, filename = "../plots/BMPWT_E11_hvg_plots.tiff", device = "tiff", height = 7, width = 7, bg = "white")
+
+```
+
+### PCA and pick significant PC's
+
+```{r "Dimensionality reduction and determination of significant PCs"}
+BMPWT_E11_seu_obj <- RunPCA(BMPWT_E11_seu_obj, features = VariableFeatures(object = BMPWT_E11_seu_obj), npcs = 100)
+
+# Examine and visualize PCA results a few different ways
+print(BMPWT_E11_seu_obj[["pca"]], dims = 1:6, nfeatures = 10)
+
+top9PCs_dim_loadings <- VizDimLoadings(BMPWT_E11_seu_obj, dims = 1:9, reduction = "pca", ncol = 3, nfeatures = 15) #save this plot manually
+top9PCs_dim_loadings
+ggsave(plot = top9PCs_dim_loadings, filename = "../plots/BMPWT_E11_top9_PCA_dim_loadings.tiff", width = 18, height = 18, dpi = 300)
+
+
+PCA_plot_after_scTransform <- DimPlot_scCustom(BMPWT_E11_seu_obj, reduction = "pca", pt.size = 1, label = F, colors_use = c("deepskyblue1","grey35","violet"), num_columns = 3, dims = c(1,2)) #save plot manually
+PCA_plot_after_scTransform
+ggsave(plot = PCA_plot_after_scTransform, filename = "../plots/BMPWT_E11_PCA_plot_after_scTransform.tiff", width = 6, height = 5, dpi = 300)
+
+
+top9_PCs_loadings_heatmap <- DimHeatmap(BMPWT_E11_seu_obj, dims = 1:9, cells = 500, balanced = TRUE, nfeatures = 15, ncol = 3, reduction = "pca") 
+top9_PCs_loadings_heatmap
+ggsave(plot = top9_PCs_loadings_heatmap, filename = "../plots/BMPWT_E11_top9_PCs_loadings_heatmap.tiff", width = 10, height = 10, device = "tiff") #save plot manually
+
+
+elbowplot_BMPWT_E11 <- ElbowPlot(BMPWT_E11_seu_obj, ndims = 75) 
+elbowplot_BMPWT_E11
+ggsave(plot = elbowplot_BMPWT_E11, filename = "../plots/elbowplot_BMPWT_E11.tiff", width = 13, height = 10, dpi = 300, device = "tiff", bg = "white")
+
+# choose 50
+```
+
+### RunUMAP and cluster at multiple resolutions
+
+```{r "Find optimal clustering by testing different resolutions"}
+BMPWT_E11_seu_obj <- RunUMAP(BMPWT_E11_seu_obj,reduction = "pca", dims = 1:50, n.components = 3L)
+BMPWT_E11_seu_obj <- FindNeighbors(BMPWT_E11_seu_obj, reduction = "pca", dims = 1:50)
+BMPWT_E11_seu_obj <- FindClusters(BMPWT_E11_seu_obj, resolution = c(0.3, 0.5, 0.8, 1.0, 1.2))
+
+# resolution---Clusters
+#   0.3         9
+#   0.5         11
+#   0.8         16
+#   1.0         20
+#   1.2         22
+
+saveRDS(BMPWT_E11_seu_obj, file = "BMPWT_E11_seu_obj.RDS")
+```
+
+### Exploratory plots after clustering
+
+```{r}
+descrip_plot_1 <- FeaturePlot_scCustom(BMPWT_E11_seu_obj, features = c("percent_mito", "percent_ribo", "nCount_RNA", "nFeature_RNA"), pt.size = 0.1)
+ggsave(plot = descrip_plot_1, filename = "descriptive_plot_1_BMPWT_E11_after_clustering.tiff", path = "../plots/", device = "tiff", height = 9, width = 11 )
+
+epcam_venus_fplot <- FeaturePlot_scCustom(BMPWT_E11_seu_obj, features = c( "VenusWPRE", "Sox2", "Epcam", "Neurod1"), pt.size = 0.5)
+ggsave(plot = epcam_venus_fplot, filename = "epcam_venus_featureplot_BMPWT_E11.tiff", path = "../plots/", device = "tiff", height = 9, width = 11 )
+```
+
+### Clustree to identify the relationship between the predicted clusters
+
+```{r "Run clustree"}
+
+#| fig-height: 10
+clustree(BMPWT_E11_seu_obj)
+
+ggsave(filename = "clustree_BMPWT_E11.tiff", path = "../plots", device = "tiff", width = 18, height = 10)
+
+```
+
+### BuildClusterTree to understand the relationship between the predicted clusters
+
+```{r "BuildClusterTree to check optimal if optimal clustering has been acheived"}
+
+# Ideally, the tools below should be used to obtain nice looking plots once a identity class(res) has been chosen based on the output of clustree in the previous step
+
+Idents(BMPWT_E11_seu_obj) <- BMPWT_E11_seu_obj$SCT_snn_res.0.5
+
+BMPWT_E11_seu_obj <-  BuildClusterTree(
+    BMPWT_E11_seu_obj,
+    reorder = F,
+    reorder.numeric = F,
+    dims = 1:50
+  )
+Tool(object = BMPWT_E11_seu_obj, slot = 'BuildClusterTree')
+
+tiff("../plots/BMPWT_E11_plotClusterTree.tiff", width = 20, height = 16, units = "cm", res = 300)
+PlotClusterTree(object = BMPWT_E11_seu_obj) 
+dev.off()
+
+PlotClusterTree(object = BMPWT_E11_seu_obj)
+
+# Beautify buildcluster tree results using ggtree
+tree <- Tool(object = BMPWT_E11_seu_obj, slot = "BuildClusterTree")
+tree$tip.label <- paste0("Cluster", tree$tip.label)
+
+p_tree <- ggtree::ggtree(tree, aes(x, y)) +
+  scale_y_reverse() +
+  ggtree::geom_tree() +
+  ggtree::theme_tree() +
+  ggtree::geom_tiplab(offset = 1) +
+  ggtree::geom_tippoint(color = custom_colors$discrete[1:length(tree$tip.label)], shape = 16, size = 5) +
+  coord_cartesian(clip = 'off') +
+  theme(plot.margin = unit(c(0,2.5,0,0), 'cm')) + ggtitle(label =  "BMPWT_E11_res0.5_PC50")
+
+p_tree
+
+ggsave('../plots/BMPWT_E11_cluster_tree_res0.5_pc50.tiff', p_tree, height = 7, width = 9)
+```
+
+### Check cluster stability using scran
+
+```{r "Check cluster stability i.e. if there are clusters are overclustered and could potentially be pooled"}
+
+#use bootstrapcluster function from scran
+BMPWT_E11_sce <- as.SingleCellExperiment(BMPWT_E11_seu_obj)
+
+assign_prob <- bluster::bootstrapStability(BMPWT_E11_sce, FUN = function(x) {
+    g <- buildSNNGraph(x, use.dimred = 'PCA')
+    igraph::cluster_walktrap(g)$membership
+  },
+  clusters = BMPWT_E11_sce$SCT_snn_res.0.8
+) #takes a really long time to run
+
+p_ass <- assign_prob %>%
+  as_tibble() %>%
+  rownames_to_column(var = 'cluster_1') %>%
+  pivot_longer(
+    cols = 2:ncol(.),
+    names_to = 'cluster_2',
+    values_to = 'probability'
+  ) %>%
+  mutate(
+    cluster_1 = as.character(as.numeric(cluster_1) - 1),
+    cluster_1 = factor(cluster_1, levels = rev(unique(cluster_1))),
+    cluster_2 = factor(cluster_2, levels = unique(cluster_2))
+  ) %>%
+  ggplot(aes(cluster_2, cluster_1, fill = probability)) +
+  geom_tile(color = 'black') +
+  geom_text(aes(label = round(probability, digits = 2)), size = 2.5) +
+  scale_x_discrete(name = 'Cluster', position = 'top') +
+  scale_y_discrete(name = 'Cluster') +
+  scale_fill_gradient(
+    name = 'Probability', low = 'white', high = 'red', na.value = '#bdc3c7',
+    limits = c(0,1),
+    guide = guide_colorbar(
+      frame.colour = 'black', ticks.colour = 'black', title.position = 'left',
+      title.theme = element_text(hjust = 1, angle = 90),
+      barwidth = 0.75, barheight = 10
+    )
+  ) +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    legend.position = 'right',
+    panel.grid.major = element_blank()
+  )
+p_ass
+ggsave('../plots/BMPWT_E11_cluster_stability_res0.5.tiff', p_ass, height = 14, width = 15)
+```
+
+### Measure cluster modularity with scran
+
+```{r "Measure cluster similarity"}
+
+# BMPWT_E11_sce <- as.SingleCellExperiment(BMPWT_E11_seu_obj)
+
+g <- scran::buildSNNGraph(BMPWT_E11_sce, use.dimred = 'PCA')
+
+ratio <- bluster::pairwiseModularity(g, BMPWT_E11_seu_obj@meta.data$SCT_snn_res.0.8, as.ratio = TRUE)
+
+ratio_to_plot <- log10(ratio+1)
+
+p_sim <- ratio_to_plot %>%
+  as_tibble() %>%
+  rownames_to_column(var = 'cluster_1') %>%
+  pivot_longer(
+    cols = 2:ncol(.),
+    names_to = 'cluster_2',
+    values_to = 'probability'
+  ) %>%
+  mutate(
+    cluster_1 = as.character(as.numeric(cluster_1) - 1),
+    cluster_1 = factor(cluster_1, levels = rev(unique(cluster_1))),
+    cluster_2 = factor(cluster_2, levels = unique(cluster_2))
+  ) %>%
+  ggplot(aes(cluster_2, cluster_1, fill = probability)) +
+  geom_tile(color = 'white') +
+  geom_text(aes(label = round(probability, digits = 2)), size = 2.5) +
+  scale_x_discrete(name = 'Cluster', position = 'top') +
+  scale_y_discrete(name = 'Cluster') +
+  scale_fill_gradient(
+    name = 'log10(ratio)', low = 'white', high = '#c0392b', na.value = '#bdc3c7',
+    guide = guide_colorbar(
+      frame.colour = 'black', ticks.colour = 'black', title.position = 'left',
+      title.theme = element_text(hjust = 1, angle = 90),
+      barwidth = 0.75, barheight = 10
+    )
+  ) +
+  coord_fixed() +
+  theme_bw() +
+  theme(
+    legend.position = 'right',
+    panel.grid.major = element_blank()
+  )
+p_sim
+
+ggsave('../plots/cluster_similarity_res0.8.tiff', p_sim, height = 14, width = 15)
+saveRDS(BMPWT_E11_sce, "BMPWT_E11_SCE.RDS")
+```
+
+### Pick a suitable resolution and set it as Ident
+
+```{r "Pick ident and save UMAP plot"}
+# Pick one of the above resolution as the working identity
+
+Idents(BMPWT_E11_seu_obj) <- BMPWT_E11_seu_obj$SCT_snn_res.0.5
+
+initial_umap <- DimPlot_scCustom(BMPWT_E11_seu_obj, reduction = "umap", pt.size = 1, seed = 123, label = T, shuffle = T, repel = T) + ggtitle("BMPWT_E11, nPCs = 50, res = 0.5")
+
+ggsave(plot = initial_umap, filename = "../plots/BMPWT_E11_nPCs50_res0.5_umap.tiff", device = "tiff", dpi = 300, height = 7, width = 8.5)
+
+
+# plot 3d UMAP
+orig.plot3d.data <- FetchData(object = BMPWT_E11_seu_obj, vars = c("UMAP_1", "UMAP_2", "UMAP_3", "SCT_snn_res.0.5"))
+
+# Make a column of row name identities (these will be your cell/barcode names)
+orig.plot3d.data$label <- paste(rownames(orig.plot3d.data))
+plot_ly_cols <-scCustomize_Palette(num_groups = 18, ggplot_default_colors = FALSE)
+
+# Plot your data, in this example my Seurat object had 21 clusters (0-20)
+orig_3dUMAP <- plot_ly(data = orig.plot3d.data, 
+        x = ~UMAP_1, y = ~UMAP_2, z = ~UMAP_3, 
+        color = ~SCT_snn_res.0.5, 
+        colors = plot_ly_cols,
+        type = "scatter3d", 
+        mode = "markers",
+        marker = list(size = 2), # controls size of points
+        text=~label, #This is that extra column we made earlier for which we will use for cell ID
+        hoverinfo="text",
+        standalone=T
+        ) %>% layout(title = "Initial 3D UMAP without doublet removal BMPWT_E11, res0.5",
+                     margin = list(t = 100),
+                     showlegend = TRUE,
+                     legend = list(itemsizing = "constant",
+                                   itemwidth = 50))
+orig_3dUMAP
+
+# Use --embed-resources to embed resources in the HTML file
+htmlwidgets::saveWidget(orig_3dUMAP, file = "../plots/initial_3D_UMAP_BMPWT_E11_without_doublet_removal_res0.5.html", selfcontained = TRUE)
+
+```
+
+### FindAllMarkers
+
+```{r}
+
+#| label: Find markers for all the clusters without doublet removal
+BMPWT_E11_res0.5_pc50_withDoublets_all_markers <-
+  FindAllMarkers(BMPWT_E11_seu_obj, logfc.threshold = 0.25)
+
+
+write.csv(BMPWT_E11_res0.5_pc50_withDoublets_all_markers, file = "../tables/BMPWT_E11_res0.5_pc50_withDoublets_all_markers.csv")
+
+write.csv(table(BMPWT_E11_seu_obj$SCT_snn_res.0.5), quote = F, row.names = F, file = "../tables/BMPWT_E11_res0.5_pc50_withDoublets_num_cells_per_cluster.csv")
+
+```
+
+### Plot Heatmap without doublet removal
+
+```{r}
+BMPWT_E11_res0.5_pc50_withDoublets_all_markers %>% 
+  group_by(cluster) %>% 
+  top_n(n=10, wt = avg_log2FC) -> top10
+
+htmp_all_cells <- DoHeatmap(BMPWT_E11_seu_obj, features = top10$gene) + NoLegend()
+ggsave(plot = htmp_all_cells, filename = "../plots/BMPWT_E11_PC50_res0.5_heatmap_all_cells.tiff", device = "tiff", height = 20, width = 15)
+```
+
+### Parameter Sweep for DoubletFinder
+
+```{r}
+# Can run parameter optimization with paramSweep
+# BMPWT_E11_seu_obj <- readRDS("BMPWT_E11_seu_obj.rds")
+
+# work in parallel
+# options(mc.cores = detectCores() - 2)
+
+sweep.res <- paramSweep_v3(BMPWT_E11_seu_obj, sct = T, PCs = 1:50)
+# Takes a really long time to run
+
+sweep.stats <- summarizeSweep(sweep.res, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+
+tiff(  "../plots/doubletFinder_BMPWT_E11_barplot.tiff",
+  res = 300,
+  width = 20,
+  height = 15,
+  units = "cm"
+)
+barplot(
+  bcmvn$BCmetric,
+ names.arg = bcmvn$pK,
+ las = 2,
+ xlab = "pK",
+ axis.lty = 2
+)
+dev.off()
+
+
+pK=as.numeric(as.character(bcmvn$pK))
+BCmetric=bcmvn$BCmetric
+pK_choose = pK[which(BCmetric %in% max(BCmetric))]
+
+tiff(
+  "../plots/linechart_bcmvn.tiff",
+  res = 300,
+  height = 17,
+  width = 25,
+  units = "cm"
+)
+par(mar = c(5, 4, 4, 5) + 1,
+    cex.main = 1.2,
+    font.main = 2)
+plot(
+  x = pK,
+  y = BCmetric,
+  pch = 16,
+  type = "b",
+  col = "blue",
+  lty = 1
+)
+abline(
+  v = pK_choose,
+  lwd = 2,
+  col = 'red',
+  lty = 2
+)
+title("The BCmvn distributions BMPWT_E11")
+text(
+  pK_choose,
+  max(BCmetric),
+  as.character(pK_choose),
+  pos = 4,
+  col = "red"
+)
+dev.off()
+# ggsave(filename = "../plots/doubletFinder_BMPWT_E11_lineplot.tiff")
+```
+
+### Remove doublets with DoubletFinder
+
+```{r "Remove doublets with DoubletFinder"}
+
+
+# define the expected number of doublet cells.
+# https://kb.10xgenomics.com/hc/en-us/articles/360054599512-What-is-the-cell-multiplet-rate-when-using-the-3-CellPlex-Kit-for-Cell-Multiplexing-
+dim(BMPWT_E11_seu_obj) # Use this to set the expected doublet rate
+nExp <- round(ncol(BMPWT_E11_seu_obj) * .14)  # expect ~8% doublets based on target cell recovery in this experiment (~10K cells), this changes for each sample.
+
+BMPWT_E11_seu_obj <- doubletFinder_v3(BMPWT_E11_seu_obj, pN = 0.25, pK = 0.11, nExp = nExp, PCs = 1:50, sct = T)
+
+# Save the seurat object after doublet prediction
+# saveRDS(BMPWT_E11_seu_obj, "BMPWT_E11_seu_obj.RDS")
+
+# name of the DF prediction can change depending on the results from paramsweep function, so extract the correct column name to remove doublets. Try different pK values and cross check with nUMI and percent_mito levels.
+names(BMPWT_E11_seu_obj@meta.data)
+
+DF.name = colnames(BMPWT_E11_seu_obj@meta.data)[grepl("DF.classifications_0.25_0.11_2348", colnames(BMPWT_E11_seu_obj@meta.data))] 
+ 
+dblfnd_plot <- DimPlot_scCustom(
+  BMPWT_E11_seu_obj,
+  group.by = DF.name,
+  reduction = "umap",
+  label = F,
+  pt.size = 1,
+  shuffle = F
+) + ggtitle("DoubletFinder_pK0.11_BMPWT_E11")
+ggsave(plot = dblfnd_plot, filename = "DoubletFinder_pK0.11_BMPWT_E11_UMAP.tiff", path = "../plots/", device = "tiff", dpi = 300, height = 7, width = 8)
+
+
+dblfndr_vlnplot <-
+  VlnPlot_scCustom(
+    BMPWT_E11_seu_obj,
+    features = "nFeature_RNA",
+    group.by = DF.name,
+    pt.size = 0.1
+  ) + ggtitle("nCount_RNA_pK0.11_BMPWT_E11")
+
+ggsave(plot = dblfndr_vlnplot, filename = "../plots/DoubletFinder_pK0.11_BMPWT_E11_nCountRNA_VlnPlot.tiff")
+dblfndr_vlnplot
+
+#plot cells with high nUMI and high percent_mito (binned incrementally), crudely speaking these should overlap with the predicted doublets
+pal <- viridis(n = 10, option = "D")
+
+pct_mt_binned_featureplot <-
+  FeaturePlot_scCustom(
+    BMPWT_E11_seu_obj,
+    features = "percent_mito",
+    na_cutoff = 5,
+    pt.size = 1,
+    colors_use = pal
+  ) + ggtitle("BMPWT_E11_pct_mt_binned_pK0.11")#we are binning nUMI=5% and up
+ggsave(plot = pct_mt_binned_featureplot, "../plots/BMPWT_E11_pct_mt_binned_featureplot.tiff", dpi = 300, height = 7, width = 8, device = "tiff")
+pct_mt_binned_featureplot
+
+nUMI_binned_featureplot <-
+  FeaturePlot_scCustom(
+    BMPWT_E11_seu_obj,
+    features = "nCount_RNA",
+    na_cutoff = 30000,
+    pt.size = 1,
+    colors_use = pal
+  ) + ggtitle("BMPWT_E11_pK0.11_high_nCountRNA_visualization")#we are binning nUMI=20000 and up
+ggsave(plot = nUMI_binned_featureplot, "../plots/BMPWT_E11_high_nCountRNA_binned_featureplot.tiff", dpi = 300, height = 7, width = 7.5, device = "tiff")
+nUMI_binned_featureplot
+
+
+# remove the doublets, pick the correct DF.name before removing doublets
+DF.name = colnames(BMPWT_E11_seu_obj@meta.data)[grepl("DF.classifications_0.25_0.11_2348", colnames(BMPWT_E11_seu_obj@meta.data))] 
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 = BMPWT_E11_seu_obj[, BMPWT_E11_seu_obj@meta.data[, DF.name] == "Singlet"]
+
+# If there are multiple pK values then remove doublets for each one
+
+# # remove the doublets, pick the correct DF.name before removing doublets
+# DF.name = colnames(BMPWT_E11_seu_obj@meta.data)[grepl("DF.classifications_0.25_0.17_1015", colnames(BMPWT_E11_seu_obj@meta.data))] 
+# BMPWT_E11_seu_obj_dbl_removed_pK0.11 = BMPWT_E11_seu_obj[, BMPWT_E11_seu_obj@meta.data[, DF.name] == "Singlet"]
+
+
+dim(BMPWT_E11_seu_obj) 
+# [1] 16329 16774
+dim(BMPWT_E11_seu_obj_dbl_removed_pK0.11) 
+# [1] 16329 14426
+
+# print("The number of cells removed by DoubletFinder is `r dim(BMPWT_E11_seu_obj) - dim(BMPWT_E11_seu_obj_dbl_removed_pK0.11)`")
+
+# example: [1]pK_0.01: 19712 14133,pK_0.09: 19712 14133 , pK_0.25: 19712 14133
+#changing the pK values does not change the number of doblets predicted, but it changes which cells are predicted as doublets!
+
+# plot umap after doubletremoval
+orig_dimplot <- DimPlot_scCustom(
+  BMPWT_E11_seu_obj,
+  pt.size = 1,
+  seed = 123,
+  label = T,
+  shuffle = T,
+  repel = T
+) + ggtitle(label =  "BMPWT_E11_res0.5_PC50_withDoublets_allCells_orig_UMAP")
+
+ggsave(plot = orig_dimplot, filename = "../plots/BMPWT_E11_orig_umap_res0.5_with_doublets_allcells.tiff", device = "tiff", height = 7, width = 8, bg = "white")
+orig_dimplot
+
+nodoublet_orig_dimplot <-
+  DimPlot_scCustom(
+    BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+    pt.size = 1,
+    seed = 123,
+    label = T,
+    shuffle = T,
+    repel = T
+  ) + ggtitle(label =  "BMPWT_E11_res0.5_PC50_pK0.11_noDoublets_orig_UMAP")
+
+ggsave(plot = nodoublet_orig_dimplot, filename = "../plots/BMPWT_E11_res0.5_PC50_pK0.11_noDoublets_orig_umap.tiff", device = "tiff", height = 7, width = 8, bg = "white")
+nodoublet_orig_dimplot
+```
+
+### Reanalyze data after doublet removal with DoubletFinder
+
+```{r}
+#| label: rerun find clusters on the new seurat after doublet removal with DoubletFinder
+
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 <-
+  SCTransform(
+    BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+    vst.flavor = "v2",
+    conserve.memory = T,
+    return.only.var.genes = T
+  )
+
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 <-
+  RunPCA(
+    BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+    features = VariableFeatures(object = BMPWT_E11_seu_obj_dbl_removed_pK0.11),
+    npcs = 100
+  )
+
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 <-
+  RunUMAP(
+    BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+    reduction = "pca",
+    dims = 1:50,
+    n.components = 3L
+  )
+
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 <-
+  FindNeighbors(BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+                reduction = "pca",
+                dims = 1:50)
+
+BMPWT_E11_seu_obj_dbl_removed_pK0.11 <-
+  FindClusters(
+    BMPWT_E11_seu_obj_dbl_removed_pK0.11,
+    resolution = c(0.3, 0.5, 0.8, 1.0, 1.2)
+  )
+
+Idents(BMPWT_E11_seu_obj_dbl_removed_pK0.11) <-
+  BMPWT_E11_seu_obj_dbl_removed_pK0.11$SCT_snn_res.0.5
+
+noDoublets_reclustered_umap <- DimPlot_scCustom(BMPWT_E11_seu_obj_dbl_removed_pK0.11, pt.size = 1, seed = 123, label = T, shuffle = T, repel = T) + ggtitle(label =  "BMPWT_E11_res0.5_PC50_pK0.11_reclusteredUMAP_noDoublets")
+
+ggsave(plot = noDoublets_reclustered_umap, filename = "../plots/BMPWT_E11_nodoublet_PC50_res0.5_pK0.11_reclustered_umap.tiff", device = "tiff", height = 7, width = 7.5, bg = "white")
+noDoublets_reclustered_umap
+
+# Save the data as seurat object after processing with DoubletFinder
+saveRDS(BMPWT_E11_seu_obj_dbl_removed_pK0.11, "BMPWT_E11_seu_obj_dbl_removed_pK0.11.RDS")
+
+# Plot 3D UMAP of the Doublet Finder processed data
+DblFndr_plot3d.data <- FetchData(object = BMPWT_E11_seu_obj_dbl_removed_pK0.11, vars = c("UMAP_1", "UMAP_2", "UMAP_3", "SCT_snn_res.0.5"))
+
+# Make a column of row name identities (these will be your cell/barcode names)
+DblFndr_plot3d.data$label <- paste(rownames(DblFndr_plot3d.data))
+plot_ly_cols <-scCustomize_Palette(num_groups = 17, ggplot_default_colors = FALSE)
+
+# Plot your data, in this example my Seurat object had 21 clusters (0-20)
+DblFndr_3dUMAP <- plot_ly(data = DblFndr_plot3d.data,
+        x = ~UMAP_1, y = ~UMAP_2, z = ~UMAP_3, 
+        color = ~SCT_snn_res.0.5, 
+        colors = plot_ly_cols,
+        type = "scatter3d", 
+        mode = "markers",
+        marker = list(size = 2), # controls size of points
+        text=~label, #This is that extra column we made earlier for which we will use for cell ID
+        hoverinfo="text",
+        standalone=T
+        ) %>% layout(title = "3D UMAP after doublet removal using DoubletFinder-pK0.11, BMPWT_E11 res0.5",
+                     margin = list(t = 100),
+                     showlegend = TRUE,
+                     legend = list(itemsizing = "constant",
+                                   itemwidth = 50))
+DblFndr_3dUMAP
+
+# Use --embed-resources to embed resources in the HTML file
+htmlwidgets::saveWidget(DblFndr_3dUMAP, file = "../plots/3D_UMAP_after_doublet_removal_with_DoubletFinderpK0.11_res0.5.html", selfcontained = TRUE)
+
+# FindMarkers, check identities/res level before proceeding
+BMPWT_E11_noDoublets_allMarkers_DblFndr_pK0.11_res0.5_pc50 <- FindAllMarkers(BMPWT_E11_seu_obj_dbl_removed_pK0.11, logfc.threshold = 0.25)
+
+write.csv(BMPWT_E11_noDoublets_allMarkers_DblFndr_pK0.11_res0.5_pc50, file = "../tables/BMPWT_E11_DblFndr_pK0.11_nodoublets_res0.5_pc50_allMarkers.csv")
+
+write.csv(table(BMPWT_E11_seu_obj_dbl_removed_pK0.11$SCT_snn_res.0.5), quote = F, row.names = F, file = "../tables/BMPWT_E11_res0.5_DblFndr_pK0.11_nodoublets_num_cells_per_cluster.csv")
+
+```
+
+### Plot heatmap after doublet removal using DoubletFinder
+
+```{r}
+#| label: plot heatmap after doublet removal with DoubletFinder
+
+BMPWT_E11_noDoublets_allMarkers_DblFndr_pK0.11_res0.5_pc50 %>% 
+  group_by(cluster) %>% 
+  top_n(n=10, wt = avg_log2FC) -> top10
+
+htmp_DblFndr_singlets <- DoHeatmap(BMPWT_E11_seu_obj_dbl_removed_pK0.11, features = top10$gene) + ggtitle("BMPWT_E11, after DoubletFinder(pK0.11), res=0.5 nPCs=50") + NoLegend()
+ggsave(plot = htmp_DblFndr_singlets, filename = "../plots/BMPWT_E11_PC50_res0.5_heatmap_DblFndr_singlets.tiff", device = "tiff", height = 25, width = 20)
+```
+
+\#<!--# May be include a loop to run findallmarkers at mulitple resolutions -->
+
+### Check for doublet prediction concordance with scDblFinder
+
+```{r}
+#|label: check doublets with scDblFinder
+
+library(BiocParallel)
+
+set.seed(123)
+suppressPackageStartupMessages(library(scDblFinder))
+# bp <- MulticoreParam(3, RNGseed=1234)
+
+BMPWT_E11_sce <- as.SingleCellExperiment(BMPWT_E11_seu_obj)
+
+
+# we run scDblFinder (providing the unusually high doublet rate)
+BMPWT_E11_sce <- scDblFinder(BMPWT_E11_sce)
+# Threshold found:0.032
+# 1457 (8.7%) doublets called
+
+# Plot the predicted doublet distribution on the umap
+scdbl_umap <- plotUMAP(BMPWT_E11_sce, colour_by = "scDblFinder.class", point_size=1.5, point_alpha = 0.8, order_by = "scDblFinder.class") + ggtitle("BMPWT_E11_scDblFinder_doublet_prediction_without_clustering_info")
+
+ggsave(plot = scdbl_umap, filename = "../plots/BMPWT_E11_scDbl_umap_without_clustering_info.tiff", height = 6, width = 7, device = "tiff", bg = "white")
+
+# Remove doublets
+scdbl_singlets <- as.Seurat(subset(BMPWT_E11_sce,  , BMPWT_E11_sce$scDblFinder.class == "singlet")) #this particular step is giving random problems, I was able to subset without the extra comma in the BMPQD datasets so far, however in this particular dataset (BMPWT_E11), I am getting a out-of-bounds error and unable to exclude the doublets. Introducing a extra space and a comma seems to have rectified this issue (summarized experiment function), ignore the red X thats popping up on the left side. 
+
+# Plot the singlets on the original UMAP
+scdbl_singlet_umap <- DimPlot_scCustom(scdbl_singlets, group.by = "SCT_snn_res.0.5" , pt.size=1.5) + ggtitle("BMPWT_E11_scDbl_singlets_res0.5_origUMAP")
+
+ggsave(plot = scdbl_singlet_umap, filename = "../plots/BMPWT_E11_scDbl_singlets_res0.5_origUMAP.tiff", height = 6, width = 7, device = "tiff", bg = "white")
+
+table(scdbl_singlets$scDblFinder.class)
+
+# Extract doublets
+scdbl_doublets <- as.Seurat(subset(BMPWT_E11_sce,  , BMPWT_E11_sce$scDblFinder.class == "doublet"))
+
+# Plot the doublets on the original UMAP
+scdbl_doublet_umap <- DimPlot_scCustom(scdbl_doublets, group.by = "SCT_snn_res.0.5" , pt.size=1.5) + ggtitle("BMPWT_E11_scDbl_doublets_res0.5_origUMAP")
+
+ggsave(plot = scdbl_doublet_umap, filename = "../plots/BMPWT_E11_scDbl_doublets_res0.5_origUMAP.tiff", height = 6, width = 7, device = "tiff", bg = "white")
+
+table(scdbl_doublets$scDblFinder.class)
+
+# Reanalyze data after doublet removal with scDblFinder
+scdbl_singlets <-
+  SCTransform(
+    scdbl_singlets,
+    vst.flavor = "v2",
+    conserve.memory = T,
+    return.only.var.genes = T
+  )
+
+scdbl_singlets <-
+  RunPCA(
+    scdbl_singlets,
+    features = VariableFeatures(object = scdbl_singlets),
+    npcs = 100
+  )
+
+scdbl_singlets <-
+  FindNeighbors(scdbl_singlets,
+                reduction = "pca",
+                dims = 1:50)
+
+scdbl_singlets <-
+  FindClusters(scdbl_singlets,
+               resolution = c(0.3, 0.5, 0.8, 1.0, 1.2))
+
+scdbl_singlets <-
+  RunUMAP(
+    scdbl_singlets,
+    reduction = "pca",
+    dims = 1:50,
+    n.components = 3L
+  )
+Idents(scdbl_singlets) <-
+  scdbl_singlets$SCT_snn_res.0.5
+
+# Plot UMAP
+scDbl_singlet_res0.5_umap <- DimPlot_scCustom(scdbl_singlets, pt.size = 1.5, ) + ggtitle("BMPWT_E11_scDbl_singlets_res0.5_PC50_reclustered_UMAP")
+ggsave(plot = scDbl_singlet_res0.5_umap, filename = "../plots/BMPWT_E11_scDbl_singlet_res0.5_reclusteredUMAP.tiff", height = 7, width = 8, device = "tiff")
+scDbl_singlet_res0.5_umap
+
+# Plot clustertree
+clustree(scdbl_singlets)
+ggsave(filename = "clustree_BMPWT_E11_scdbl_singlets.tiff", path = "../plots", device = "tiff", width = 25, height = 12)
+
+# BuildclusterTree
+Idents(scdbl_singlets) <- scdbl_singlets$SCT_snn_res.0.5
+
+scdbl_singlets <-  BuildClusterTree(
+    scdbl_singlets,
+    reorder = F,
+    reorder.numeric = F,
+    dims = 1:50 
+  )
+Tool(object = scdbl_singlets, slot = 'BuildClusterTree')
+
+tiff("../plots/plotClusterTree_scdbl_singlets.tiff", width = 20, height = 16, units = "cm", res = 300)
+PlotClusterTree(object = scdbl_singlets) 
+dev.off()
+
+PlotClusterTree(object = scdbl_singlets)# + ggtitle("BMPWT_E11_scdbl_singlets_res0.8")
+
+# Beautify buildcluster tree results using ggtree
+tree <- Tool(object = scdbl_singlets, slot = "BuildClusterTree")
+tree$tip.label <- paste0("Cluster", tree$tip.label)
+
+p_tree <- ggtree::ggtree(tree, aes(x, y)) +
+  scale_y_reverse() +
+  ggtree::geom_tree() +
+  ggtree::theme_tree() +
+  ggtree::geom_tiplab(offset = 1) +
+  ggtree::geom_tippoint(color = custom_colors$discrete[1:length(tree$tip.label)], shape = 16, size = 5) +
+  coord_cartesian(clip = 'off') +
+  theme(plot.margin = unit(c(0,2.5,0,0), 'cm')) + ggtitle(label = "scdbl_singlets_clusterTree_res0.5.tiff")
+
+p_tree
+
+ggsave(plot = p_tree, filename = '../plots/BMPWT_E11_scdbl_cluster_tree_res0.5_pc50.tiff', height = 7, width = 9)
+
+
+# Find markers
+BMPWT_E11_scdbl_singlets_res0.5_markers <- FindAllMarkers(scdbl_singlets, logfc.threshold = 0.25)
+
+write.csv(x= BMPWT_E11_scdbl_singlets_res0.5_markers, file = "../tables/BMPWT_E11_scdbl_singlets_res0.5_markers.csv")
+
+saveRDS(scdbl_singlets, "scdbl_singlets.RDS")
+```
+
+```{r}
+#|label: visualize 3D umap
+# Prepare a dataframe for cell plotting
+#seurat_object_list <- c("BMPWT_E11_seu_obj", "BMPWT_E11_seu_obj_dbl_removed")
+
+scDbl.plot3d.data <- FetchData(object = scdbl_singlets, vars = c("umap_1", "umap_2", "umap_3", "SCT_snn_res.0.5"))
+
+# Make a column of row name identities (these will be your cell/barcode names)
+scDbl.plot3d.data$label <- paste(rownames(scDbl.plot3d.data))
+plot_ly_cols <-scCustomize_Palette(num_groups = 17, ggplot_default_colors = FALSE)
+
+# Plot your data, in this example my Seurat object had 21 clusters (0-20)
+scDbl_3dUMAP <- plot_ly(data = scDbl.plot3d.data, 
+        x = ~umap_1, y = ~umap_2, z = ~umap_3, 
+        color = ~SCT_snn_res.0.5, 
+        colors = plot_ly_cols,
+        type = "scatter3d", 
+        mode = "markers",
+        marker = list(size = 2), # controls size of points
+        text=~label, #This is that extra column we made earlier for which we will use for cell ID
+        hoverinfo="text",
+        standalone=T
+        )%>% layout(title = "3D UMAP after doublet removal using scDblFinder BMPWT_E11, res0.5",
+                     margin = list(t = 100),
+                     showlegend = TRUE,
+                     legend = list(itemsizing = "constant",
+                                   itemwidth = 50))
+
+scDbl_3dUMAP
+
+# Use --embed-resources to embed resources in the HTML file
+htmlwidgets::saveWidget(scDbl_3dUMAP, file = "../plots/3D_UMAP_after_doublet_removal_with_scDblFinder_res0.5.html", selfcontained = TRUE)
+```
+
+### Plot Heatmap after doublet removal with scDblFinder
+
+```{r "Plot Heatmap"}
+
+BMPWT_E11_scdbl_singlets_res0.5_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+scDbl_singlets_heatmap <- DoHeatmap(scdbl_singlets, features = top10$gene) + NoLegend() + ggtitle("BMPWT_E11_nPCs50_res0.5_scDbl_singlets") 
+
+ggsave(plot = scDbl_singlets_heatmap, filename = "../plots/BMPWT_E11_nPCs50_res0.5_scDbl_singlets_heatmap.tiff", width = 20, height = 25)
+scDbl_singlets_heatmap
+
+```
+
+### Merge clusters if needed
+
+```{r "Merge Clusters"}
+# Merge clusters based on the clustree and marker analysis
+  
+
+# rename clusters to have the same name so that they can be merged
+ 
+# new_cluster_ids <- c("0"=="1", "7" == "9" , "5" == "12", "6" == "13", "3" == "16")
+```
+
+### Re-identify markers using the merged clusters
+
+```{r "Re-identify markers"}
+# 
+```
