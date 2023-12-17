@@ -1391,5 +1391,6 @@ scDbl_singlets_heatmap
 # import the singlets seurat object and export the raw counts
 saveRDS(scdbl_singlets[['RNA']]@counts, 'BMPWT_E12_scdbl_singlets_raw_counts')
 
-
+# Export the scdbl singlet metadata
+write.csv(scdbl_singlets@meta.data[,6:12], row.names = T, file = "BMPWT_E12_scdbl_singlet_metadata.csv")
 ```
