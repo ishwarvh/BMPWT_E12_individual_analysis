@@ -107,15 +107,15 @@ sc = load10X('../../gex_matrices/BMPWT_E12_cellranger_output/')
 sc = autoEstCont(sc, doPlot = T, verbose = T, tfidfMin = 0.9)
 out = adjustCounts(sc, roundToInt = TRUE)
 dim(out)
-# [1] 21686 17103
+# [1] 21686 13850
 
 nosoup <- Read10X("../../gex_matrices/BMPWT_E12_cellranger_output/filtered_feature_bc_matrix/")
 dim(nosoup)
-# [1] 21686  17103
+# [1] 21686  13850
 
 #How many UMI;s were removed?
 ((sum(nosoup)-sum(out))/sum(nosoup))*100
-# [1] 1.6
+# [1] 1.500
 
 ```
 
@@ -129,7 +129,7 @@ dim(nosoup)
 BMPWT_E12_seu_obj <- CreateSeuratObject(counts = out, project = "BMPWT_E12", min.cells = 10, min.features = 200) #Keep only genes expressed in atleast 10 cells and cells expressing atleast 200 genes
 
 BMPWT_E12_seu_obj
-# 16329 features across 17096 samples
+# 15892 features across 13840 samples
 ```
 
 ### Add mitochondrial and ribosomal gene percentages to the meta.data
@@ -359,7 +359,7 @@ ggsave("../plots/prefiltration_BMPWT_E12_median_values.tiff", device = "tiff", h
 BMPWT_E12_seu_obj <- subset(BMPWT_E12_seu_obj, subset = nFeature_RNA > 500 & nFeature_RNA < 8500 & percent_mito < 20) #add a nCount_RNA criteria if needed
 
 BMPWT_E12_seu_obj
-# 15825 features across 16998 samples
+# 15892 features across 13661 samples
 
 saveRDS(BMPWT_E12_seu_obj, "filtered_BMPWT_E12_seu_obj.RDS")
 ```
@@ -848,7 +848,7 @@ orig.plot3d.data <- FetchData(object = BMPWT_E12_seu_obj, vars = c("UMAP_1", "UM
 
 # Make a column of row name identities (these will be your cell/barcode names)
 orig.plot3d.data$label <- paste(rownames(orig.plot3d.data))
-plot_ly_cols <-scCustomize_Palette(num_groups = 18, ggplot_default_colors = FALSE)
+plot_ly_cols <-scCustomize_Palette(num_groups = 19, ggplot_default_colors = FALSE)
 
 # Plot your data, in this example my Seurat object had 21 clusters (0-20)
 orig_3dUMAP <- plot_ly(data = orig.plot3d.data, 
@@ -978,7 +978,7 @@ dev.off()
 # define the expected number of doublet cells.
 # https://kb.10xgenomics.com/hc/en-us/articles/360054599512-What-is-the-cell-multiplet-rate-when-using-the-3-CellPlex-Kit-for-Cell-Multiplexing-
 dim(BMPWT_E12_seu_obj) # Use this to set the expected doublet rate
-nExp <- round(ncol(BMPWT_E12_seu_obj) * .14)  # expect ~8% doublets based on target cell recovery in this experiment (~10K cells), this changes for each sample.
+nExp <- round(ncol(BMPWT_E12_seu_obj) * .11)  # expect ~8% doublets based on target cell recovery in this experiment (~10K cells), this changes for each sample.
 
 BMPWT_E12_seu_obj <- doubletFinder_v3(BMPWT_E12_seu_obj, pN = 0.25, pK = 0.13, nExp = nExp, PCs = 1:50, sct = T)
 
@@ -1050,9 +1050,9 @@ BMPWT_E12_seu_obj_dbl_removed_pK0.13 = BMPWT_E12_seu_obj[, BMPWT_E12_seu_obj@met
 
 
 dim(BMPWT_E12_seu_obj) 
-# [1] 16329 16774
+# [1] 15892 13661
 dim(BMPWT_E12_seu_obj_dbl_removed_pK0.13) 
-# [1] 16329 14426
+# [1] 15892 12158
 
 # print("The number of cells removed by DoubletFinder is `r dim(BMPWT_E12_seu_obj) - dim(BMPWT_E12_seu_obj_dbl_removed_pK0.13)`")
 
@@ -1141,7 +1141,7 @@ DblFndr_plot3d.data <- FetchData(object = BMPWT_E12_seu_obj_dbl_removed_pK0.13, 
 
 # Make a column of row name identities (these will be your cell/barcode names)
 DblFndr_plot3d.data$label <- paste(rownames(DblFndr_plot3d.data))
-plot_ly_cols <-scCustomize_Palette(num_groups = 17, ggplot_default_colors = FALSE)
+plot_ly_cols <-scCustomize_Palette(num_groups = 18, ggplot_default_colors = FALSE)
 
 # Plot your data, in this example my Seurat object had 21 clusters (0-20)
 DblFndr_3dUMAP <- plot_ly(data = DblFndr_plot3d.data,
@@ -1204,8 +1204,8 @@ BMPWT_E12_sce <- as.SingleCellExperiment(BMPWT_E12_seu_obj)
 
 # we run scDblFinder (providing the unusually high doublet rate)
 BMPWT_E12_sce <- scDblFinder(BMPWT_E12_sce)
-# Threshold found:0.125
-# 695 (5.7%) doublets called
+# Threshold found:0.032
+# 1457 (8.7%) doublets called
 
 # Plot the predicted doublet distribution on the umap
 scdbl_umap <- plotUMAP(BMPWT_E12_sce, colour_by = "scDblFinder.class", point_size=1.5, point_alpha = 0.8, order_by = "scDblFinder.class") + ggtitle("BMPWT_E12_scDblFinder_doublet_prediction_without_clustering_info")
@@ -1316,7 +1316,7 @@ BMPWT_E12_scdbl_singlets_res0.5_markers <- FindAllMarkers(scdbl_singlets, logfc.
 
 write.csv(x= BMPWT_E12_scdbl_singlets_res0.5_markers, file = "../tables/BMPWT_E12_scdbl_singlets_res0.5_markers.csv")
 
-saveRDS(scdbl_singlets, "BMPWT_E12_scdbl_singlets.RDS")
+saveRDS(scdbl_singlets, "scdbl_singlets.RDS")
 ```
 
 ```{r}
@@ -1328,7 +1328,7 @@ scDbl.plot3d.data <- FetchData(object = scdbl_singlets, vars = c("umap_1", "umap
 
 # Make a column of row name identities (these will be your cell/barcode names)
 scDbl.plot3d.data$label <- paste(rownames(scDbl.plot3d.data))
-plot_ly_cols <-scCustomize_Palette(num_groups = 20, ggplot_default_colors = FALSE)
+plot_ly_cols <-scCustomize_Palette(num_groups = 17, ggplot_default_colors = FALSE)
 
 # Plot your data, in this example my Seurat object had 21 clusters (0-20)
 scDbl_3dUMAP <- plot_ly(data = scDbl.plot3d.data, 
@@ -1383,4 +1383,13 @@ scDbl_singlets_heatmap
 
 ```{r "Re-identify markers"}
 # 
+```
+
+### export the scdbl singlets raw counts matrix
+
+```{r}
+# import the singlets seurat object and export the raw counts
+saveRDS(scdbl_singlets[['RNA']]@counts, 'BMPWT_E12_scdbl_singlets_raw_counts')
+
+
 ```
